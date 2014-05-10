@@ -82,9 +82,9 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
-static const char DRIVER_MODULE_NAME[]  = WIFI_DRIVER_MODULE_NAME;
-static const char DRIVER_MODULE_TAG[]   = WIFI_DRIVER_MODULE_NAME " ";
-static const char DRIVER_MODULE_PATH[]  = WIFI_DRIVER_MODULE_PATH;
+char DRIVER_MODULE_NAME[16]  = WIFI_DRIVER_MODULE_NAME;
+char DRIVER_MODULE_TAG[16]   = WIFI_DRIVER_MODULE_NAME " ";
+char DRIVER_MODULE_PATH[64]  = WIFI_DRIVER_MODULE_PATH;
 static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
 #endif
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
@@ -214,6 +214,66 @@ int wifi_load_driver()
 #ifdef WIFI_DRIVER_MODULE_PATH
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
+
+	char node[50] = {'\0',};
+    char buf[5] = {'\0',};
+	DIR *dir = opendir("/sys/bus/usb/devices/");
+	struct dirent *dent;
+	if (dir != NULL) {
+		while ((dent = readdir(dir)) != NULL) {
+            memset(node, '\0', 50);
+			sprintf(node, "/sys/bus/usb/devices/%s/idVendor", dent->d_name);
+			int vid_fd = open(node, O_RDONLY);
+            memset(buf, '\0', 5);
+			if (vid_fd > 0) {
+				read(vid_fd, buf, 4);
+				ALOGE("node = %s, vid = %s", node, buf);
+				if (strcmp(buf, "0bda") == 0 || 
+                        strcmp(buf, "148f") == 0 || strcmp(buf, "7392") == 0) {
+					sprintf(node, "/sys/bus/usb/devices/%s/idProduct", dent->d_name);
+					int pid_fd = open(node, O_RDONLY);
+					read(pid_fd, buf, 4);
+					ALOGE("node = %s, pid = %s", node, buf);
+					if (pid_fd > 0) {
+						if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0) {
+							ALOGE("rtl8192cu Wi-Fi Module 3");
+							//wifi module 3 rtl8192cu
+							strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
+							strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME2 " ");
+							strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH2);
+							close(pid_fd);
+							close(vid_fd);
+							break;
+						} else if (strcmp(buf, "8172") == 0) {
+							ALOGE("rtl8191su Wi-Fi Module 2");
+							//wifi module 2 rtl8192cu
+							strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME);
+							strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
+							strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH);
+							close(pid_fd);
+							close(vid_fd);
+							break;
+                        } else if (strcmp(buf, "5370") == 0) {
+							ALOGE("rt5370 Wi-Fi Module 1");
+							//wifi module 1 rt5370
+							strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME3);
+							strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME3 " ");
+							strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH3);
+							close(pid_fd);
+							close(vid_fd);
+							break;
+                        }
+						close(pid_fd);
+					}
+				}
+				close(vid_fd);
+			}
+		}
+	}
+	close(dir);
+
+	ALOGE("DRIVER_MODULE_NAME = %s", DRIVER_MODULE_NAME);
+	ALOGE("DRIVER_MODULE_PATH = %s", DRIVER_MODULE_PATH);
 
     if (is_wifi_driver_loaded()) {
         return 0;
@@ -827,6 +887,7 @@ int wifi_change_fw_path(const char *fwpath)
     int fd;
     int ret = 0;
 
+#if !defined(WIFI_VENDOR_REALTEK)
     if (!fwpath)
         return ret;
     fd = TEMP_FAILURE_RETRY(open(WIFI_DRIVER_FW_PATH_PARAM, O_WRONLY));
@@ -840,5 +901,6 @@ int wifi_change_fw_path(const char *fwpath)
         ret = -1;
     }
     close(fd);
+#endif    
     return ret;
 }
