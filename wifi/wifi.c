@@ -37,6 +37,8 @@
 #include <sys/_system_properties.h>
 #endif
 
+#define WIFIUSB_NODE	"/sys/bus/usb/devices/1-3."
+
 /* PRIMARY refers to the connection on the primary interface
  * SECONDARY refers to an optional connection on a p2p interface
  *
@@ -91,9 +93,9 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
-static const char DRIVER_MODULE_NAME[]  = WIFI_DRIVER_MODULE_NAME;
-static const char DRIVER_MODULE_TAG[]   = WIFI_DRIVER_MODULE_NAME " ";
-static const char DRIVER_MODULE_PATH[]  = WIFI_DRIVER_MODULE_PATH;
+char DRIVER_MODULE_NAME[16]  = WIFI_DRIVER_MODULE_NAME;
+char DRIVER_MODULE_TAG[16]   = WIFI_DRIVER_MODULE_NAME " ";
+char DRIVER_MODULE_PATH[64]  = WIFI_DRIVER_MODULE_PATH;
 static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
 #endif
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
@@ -113,6 +115,13 @@ static unsigned char dummy_key[21] = { 0x02, 0x11, 0xbe, 0x33, 0x43, 0x35,
                                        0x68, 0x47, 0x84, 0x99, 0xa9, 0x2b,
                                        0x1c, 0xd3, 0xee, 0xff, 0xf1, 0xe2,
                                        0xf3, 0xf4, 0xf5 };
+									   
+#if defined(WIFI_DRIVER_POWER_CTRL)
+    #define	WIFI_RESET_CTL_FP 	 	"/sys/devices/platform/odroid-sysfs/wifi_nrst"		// 1 -> reset on
+    #define	WIFI_ENABLE_CTL_FP  	"/sys/devices/platform/odroid-sysfs/wifi_enable"	// 1 -> enable on
+#endif    
+
+int wifi_set_module_status	(char *ctl_fp, unsigned char status);
 
 /* Is either SUPPLICANT_NAME or P2P_SUPPLICANT_NAME */
 static char supplicant_name[PROPERTY_VALUE_MAX];
@@ -230,12 +239,89 @@ int wifi_load_driver()
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
 
+	char node[50] = {'\0',};
+    char buf[5] = {'\0',};
+	DIR *dir = opendir("/sys/bus/usb/devices/");
+	struct dirent *dent;
+	if (dir != NULL) {
+		while ((dent = readdir(dir)) != NULL) {
+            memset(node, '\0', 50);
+			sprintf(node, "/sys/bus/usb/devices/%s/idVendor", dent->d_name);
+			int vid_fd = open(node, O_RDONLY);
+            memset(buf, '\0', 5);
+			if (vid_fd > 0) {
+				read(vid_fd, buf, 4);
+				ALOGE("node = %s, vid = %s", node, buf);
+				if (strcmp(buf, "0bda") == 0 || 
+                        strcmp(buf, "148f") == 0 || strcmp(buf, "7392") == 0) {
+					sprintf(node, "/sys/bus/usb/devices/%s/idProduct", dent->d_name);
+					int pid_fd = open(node, O_RDONLY);
+					read(pid_fd, buf, 4);
+					ALOGE("node = %s, pid = %s", node, buf);
+					if (pid_fd > 0) {
+						if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0) {
+							ALOGE("rtl8192cu Wi-Fi Module 3");
+							//wifi module 3 rtl8192cu
+							strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
+							strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME2 " ");
+							strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH2);
+							close(pid_fd);
+							close(vid_fd);
+							break;
+						} else if (strcmp(buf, "8172") == 0) {
+							ALOGE("rtl8191su Wi-Fi Module 2");
+							//wifi module 2 rtl8192cu
+							strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME);
+							strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
+							strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH);
+							close(pid_fd);
+							close(vid_fd);
+							break;
+                        } else if (strcmp(buf, "5370") == 0) {
+							ALOGE("rt5370 Wi-Fi Module 1");
+							//wifi module 1 rt5370
+							strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME3);
+							strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME3 " ");
+							strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH3);
+							close(pid_fd);
+							close(vid_fd);
+							break;
+                        }
+						close(pid_fd);
+					}
+				}
+				close(vid_fd);
+			}
+		}
+	}
+	close(dir);
+
+	ALOGE("DRIVER_MODULE_NAME = %s", DRIVER_MODULE_NAME);
+	ALOGE("DRIVER_MODULE_PATH = %s", DRIVER_MODULE_PATH);
+
     if (is_wifi_driver_loaded()) {
         return 0;
     }
 
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0)
+	// Wifi power control & wakeup enable
+    #if defined(WIFI_ENABLE_CTL_FP)
+		wifi_set_module_status(WIFI_ENABLE_CTL_FP, 1);	usleep(100000);
+    #endif
+    #if defined(WIFI_RESET_CTL_FP)
+		wifi_set_module_status(WIFI_RESET_CTL_FP, 1);	usleep(10000);
+    #endif
+
+    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0) {
+        ALOGE("insmod(DRIVER_MODULE_PATH = %s, DRIVER_MODULE_ARG = %s) FAIL!!!", DRIVER_MODULE_PATH, DRIVER_MODULE_ARG);
+	    #if defined(WIFI_RESET_CTL_FP)
+			wifi_set_module_status(WIFI_RESET_CTL_FP, 0);	usleep(10000);
+	    #endif
+	    #if defined(WIFI_ENABLE_CTL_FP)
+			wifi_set_module_status(WIFI_ENABLE_CTL_FP, 0);	usleep(100000);
+	    #endif
+	
         return -1;
+    }
 
     if (strcmp(FIRMWARE_LOADER,"") == 0) {
         /* usleep(WIFI_DRIVER_LOADER_DELAY); */
@@ -277,6 +363,14 @@ int wifi_unload_driver()
             usleep(500000);
         }
         usleep(500000); /* allow card removal */
+
+	    #if defined(WIFI_RESET_CTL_FP)
+			wifi_set_module_status(WIFI_RESET_CTL_FP, 0);	usleep(10000);
+	    #endif
+	    #if defined(WIFI_ENABLE_CTL_FP)
+			wifi_set_module_status(WIFI_ENABLE_CTL_FP, 0);	usleep(100000);
+	    #endif
+
         if (count) {
             return 0;
         }
@@ -868,6 +962,7 @@ int wifi_change_fw_path(const char *fwpath)
     int fd;
     int ret = 0;
 
+#if !defined(WIFI_VENDOR_REALTEK)
     if (!fwpath)
         return ret;
     fd = TEMP_FAILURE_RETRY(open(WIFI_DRIVER_FW_PATH_PARAM, O_WRONLY));
@@ -881,5 +976,37 @@ int wifi_change_fw_path(const char *fwpath)
         ret = -1;
     }
     close(fd);
+#endif
     return ret;
 }
+
+int wifi_set_module_status(char *ctl_fp, unsigned char status)
+{
+	int 	fd, ret, nwr;
+	char	buf[10];
+	
+	if((fd = open(ctl_fp, O_RDWR)) < 0)	{
+        ALOGE("%s(%s) : Cannot access \"%s\"", __FILE__, __FUNCTION__, ctl_fp);
+        return 	-1;	// fd open fail
+	}
+	
+	memset((void *)buf, 0x00, sizeof(buf));
+
+	if(status)	nwr = sprintf(buf, "%d\n", 1);
+	else		nwr = sprintf(buf, "%d\n", 0);
+
+	ret = write(fd, buf, nwr);
+
+	close(fd);
+	
+	if(ret == nwr)	{
+        ALOGI("%s : write success (on = %d)", ctl_fp, status);
+        return	0;
+	}
+	else	{
+        ALOGE("%s : write fail (on = %d)",  ctl_fp, status);
+        return	-1;
+	}
+}
+
+//----------------------------------------------------------------------------------------------------------------
