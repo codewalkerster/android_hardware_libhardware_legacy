@@ -78,18 +78,18 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 #define WIFI_DRIVER_MODULE_ARG          ""
 #endif
 #ifndef WIFI_FIRMWARE_LOADER
-#define WIFI_FIRMWARE_LOADER        ""
+#define WIFI_FIRMWARE_LOADER		""
 #endif
-#define WIFI_TEST_INTERFACE        "sta"
+#define WIFI_TEST_INTERFACE		"sta"
 
 #ifndef WIFI_DRIVER_FW_PATH_STA
-#define WIFI_DRIVER_FW_PATH_STA        NULL
+#define WIFI_DRIVER_FW_PATH_STA		NULL
 #endif
 #ifndef WIFI_DRIVER_FW_PATH_AP
-#define WIFI_DRIVER_FW_PATH_AP        NULL
+#define WIFI_DRIVER_FW_PATH_AP		NULL
 #endif
 #ifndef WIFI_DRIVER_FW_PATH_P2P
-#define WIFI_DRIVER_FW_PATH_P2P        NULL
+#define WIFI_DRIVER_FW_PATH_P2P		NULL
 #endif
 
 #if defined(WIFI_VENDOR_REALTEK)
@@ -101,10 +101,10 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 #define WIFI_DRIVER_FW_PATH_P2P         "P2P"
 #endif
 #ifndef WIFI_DRIVER_FW_PATH_PARAM
-#define WIFI_DRIVER_FW_PATH_PARAM    "/sys/module/wlan/parameters/fwpath"
+#define WIFI_DRIVER_FW_PATH_PARAM	"/sys/module/wlan/parameters/fwpath"
 #endif
 
-#define WIFI_DRIVER_LOADER_DELAY    1000000
+#define WIFI_DRIVER_LOADER_DELAY	1000000
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
@@ -126,7 +126,7 @@ static const char CONTROL_IFACE_PATH[]  = "/data/misc/wifi/sockets";
 static const char MODULE_FILE[]         = "/proc/modules";
 
 static const char IFNAME[]              = "IFNAME=";
-#define IFNAMELEN            (sizeof(IFNAME) - 1)
+#define IFNAMELEN			(sizeof(IFNAME) - 1)
 static const char WPA_EVENT_IGNORE[]    = "CTRL-EVENT-IGNORE ";
 
 static const char SUPP_ENTROPY_FILE[]   = WIFI_ENTROPY_FILE;
@@ -235,6 +235,8 @@ int is_wifi_driver_loaded() {
 #endif
 }
 
+int wifi_type = 4;
+
 int wifi_load_driver()
 {
     DIR *d;
@@ -256,24 +258,24 @@ int wifi_load_driver()
             if (vid_fd > 0) {
                 read(vid_fd, buf, 4);
                 ALOGE("node = %s, vid = %s", node, buf);
-                if (strcmp(buf, "0bda") == 0 || strcmp(buf, "7392") == 0) {
+                if (strcmp(buf, "0bda") == 0 || strcmp(buf, "148f") == 0) {
                     sprintf(node, "/sys/bus/usb/devices/%s/idProduct", dent->d_name);
                     int pid_fd = open(node, O_RDONLY);
                     read(pid_fd, buf, 4);
                     ALOGE("node = %s, pid = %s", node, buf);
                     if (pid_fd > 0) {
-                        if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
-                            ALOGE("rtl8192cu Wi-Fi Module 3");
-                            //wifi module 3 rtl8192cu
+                        if (strcmp(buf, "5572") == 0) {
+                            wifi_type = 4;
+                            ALOGE("rtl8192cu Wi-Fi Module 4");
                             strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
                             strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME2 " ");
                             strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH2);
                             close(pid_fd);
                             close(vid_fd);
                             break;
-                        } else if (strcmp(buf, "8172") == 0) {
-                            ALOGE("rtl8191su Wi-Fi Module 2");
-                            //wifi module 2 rtl8192cu
+                        } else if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
+                            wifi_type = 3;
+                            ALOGE("rtl8192cu Wi-Fi Module 3");
                             strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME);
                             strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
                             strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH);
@@ -297,7 +299,10 @@ int wifi_load_driver()
         return 0;
     }
 
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0)
+    if (wifi_type == 4) {
+        property_set("ctl.start", "rt2x00lib_insmod");
+        usleep(1000000);
+    } else if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0)
         return -1;
 
 #if 1
@@ -357,7 +362,10 @@ int wifi_unload_driver()
 {
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
-    if (rmmod(DRIVER_MODULE_NAME) == 0) {
+    if (wifi_type == 4) {
+        property_set("ctl.start", "rt2800usb_rmmod");
+        return 0;
+    } else if (rmmod(DRIVER_MODULE_NAME) == 0) {
         int count = 20; /* wait at most 10 seconds for completion */
         while (count-- > 0) {
             if (!is_wifi_driver_loaded())
