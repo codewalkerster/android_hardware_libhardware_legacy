@@ -228,24 +228,22 @@ int wifi_load_driver()
             if (vid_fd > 0) {
                 read(vid_fd, buf, 4);
                 ALOGE("node = %s, vid = %s", node, buf);
-                if (strcmp(buf, "0bda") == 0 || strcmp(buf, "7392") == 0) {
+                if (strcmp(buf, "0bda") == 0 || strcmp(buf, "148f") == 0) {
                     sprintf(node, "/sys/bus/usb/devices/%s/idProduct", dent->d_name);
                     int pid_fd = open(node, O_RDONLY);
                     read(pid_fd, buf, 4);
                     ALOGE("node = %s, pid = %s", node, buf);
                     if (pid_fd > 0) {
-                        if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
-                            ALOGE("rtl8192cu Wi-Fi Module 3");
-                            //wifi module 3 rtl8192cu
+                        if (strcmp(buf, "5572") == 0) {
+                            ALOGE("rtl8192cu Wi-Fi Module 4");
                             strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
                             strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME2 " ");
                             strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH2);
                             close(pid_fd);
                             close(vid_fd);
                             break;
-                        } else if (strcmp(buf, "8172") == 0) {
-                            ALOGE("rtl8191su Wi-Fi Module 2");
-                            //wifi module 2 rtl8192cu
+                        } else if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
+                            ALOGE("rtl8192cu Wi-Fi Module 3");
                             strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME);
                             strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
                             strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH);
