@@ -463,6 +463,17 @@ protected:
         // returns the category the device belongs to with regard to volume curve management
         static device_category getDeviceCategory(audio_devices_t device);
 
+#ifdef DOLBY_UDC_MULTICHANNEL
+        enum HdmiDeviceCapability {
+            HDMI_8,
+            HDMI_6,
+            HDMI_2,
+            HDMI_INVALID
+        };
+        
+        void setDolbySystemProperty(audio_devices_t);
+        HdmiDeviceCapability            mCurrentHdmiDeviceCapability;
+#endif //DOLBY_UDC_MULTICHANNEL
         // extract one device relevant for volume control from multiple device selection
         static audio_devices_t getDeviceForVolume(audio_devices_t device);
 
@@ -576,12 +587,16 @@ protected:
 #endif //AUDIO_POLICY_TEST
 
 private:
+        static float mapVal[4];
+        static float mapVolume(int value,const StreamDescriptor& streamDesc);
         static float volIndexToAmpl(audio_devices_t device, const StreamDescriptor& streamDesc,
                 int indexInUi);
+		int mDigitalFixed;
         // updates device caching and output for streams that can influence the
         //    routing of notifications
         void handleNotificationRoutingForStream(AudioSystem::stream_type stream);
         static bool isVirtualInputDevice(audio_devices_t device);
+	 uint32_t    mAudioOutputPolicy;	
 };
 
 };

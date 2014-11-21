@@ -31,6 +31,10 @@
 // active output devices in isStreamActiveRemotely()
 #define APM_AUDIO_OUT_DEVICE_REMOTE_ALL  AUDIO_DEVICE_OUT_REMOTE_SUBMIX
 
+  enum  audio_output_policy{
+  	DEVICE_OUTPUT_NORMAL = 0,
+	DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL = 1<<0,	
+  };
 #include <utils/Log.h>
 #include <hardware_legacy/AudioPolicyManagerBase.h>
 #include <hardware/audio_effect.h>
@@ -39,12 +43,37 @@
 #include <hardware_legacy/audio_policy_conf.h>
 #include <cutils/properties.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <cutils/properties.h>
+
+#ifdef DOLBY_UDC_MULTICHANNEL
+// System property shared with dolby codec
+#define DOLBY_SYSTEM_PROPERTY "dolby.audio.sink.info"
+#endif // DOLBY_UDC_MULTICHANNEL
+
 namespace android_audio_legacy {
 
 // ----------------------------------------------------------------------------
 // AudioPolicyInterface implementation
 // ----------------------------------------------------------------------------
 
+static int is_digital_raw()
+{
+	 int fd = -1;
+	 int digital_codec = 0;
+	 char bcmd[32] = {0};
+     fd = open("/sys/class/audiodsp/digital_codec", O_RDONLY);
+     if (fd >= 0) {
+              read(fd, bcmd, sizeof(bcmd));
+              digital_codec = strtol(bcmd, NULL, 10);
+              close(fd);
+	 }
+	 return (digital_codec ? 1:0);
+}	 
 
 status_t AudioPolicyManagerBase::setDeviceConnectionState(audio_devices_t device,
                                                   AudioSystem::device_connection_state state,
@@ -183,6 +212,10 @@ status_t AudioPolicyManagerBase::setDeviceConnectionState(audio_devices_t device
                             !mOutputs.valueAt(i)->isDuplicated(),
                             0);
         }
+#ifdef DOLBY_UDC_MULTICHANNEL
+        audio_devices_t audioOutputDevice = getDeviceForStrategy(getStrategy(AudioSystem::MUSIC), false);
+        setDolbySystemProperty(audioOutputDevice);
+#endif //DOLBY_UDC_MULTICHANNEL
 
         if (device == AUDIO_DEVICE_OUT_WIRED_HEADSET) {
             device = AUDIO_DEVICE_IN_WIRED_HEADSET;
@@ -573,7 +606,15 @@ audio_io_handle_t AudioPolicyManagerBase::getOutput(AudioSystem::stream_type str
         return mTestOutputs[mCurOutput];
     }
 #endif //AUDIO_POLICY_TEST
-
+/*DIRECT output or none 16 bit pcm output route to digital output  */
+    if(mAudioOutputPolicy&DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL){
+         if ((flags & AUDIO_OUTPUT_FLAG_DIRECT) ||
+             (format != AUDIO_FORMAT_PCM_16_BIT) ||
+             ((channelMask != AUDIO_CHANNEL_OUT_STEREO)&& (channelMask !=AUDIO_CHANNEL_OUT_MONO))){
+		 //when direct output ,only and always aux digital available	
+        	   device = (device&AUDIO_DEVICE_OUT_AUX_DIGITAL)|AUDIO_DEVICE_OUT_AUX_DIGITAL;
+        }
+    }
     // open a direct output if required by specified parameters
     //force direct flag if offload flag is set: offloading implies a direct output stream
     // and all common behaviors are driven by checking only the direct flag
@@ -598,6 +639,13 @@ audio_io_handle_t AudioPolicyManagerBase::getOutput(AudioSystem::stream_type str
                                            (audio_output_flags_t)flags);
     }
 
+    if(mAudioOutputPolicy&DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL){
+	    if(samplingRate==0 || format==0 || channelMask==0 /*||stream==AudioSystem::SYSTEM*/){//always key sound
+	 	    profile=NULL;
+            device = device&~AUDIO_DEVICE_OUT_AUX_DIGITAL;
+	    }
+    }
+
     if (profile != NULL) {
         AudioOutputDescriptor *outputDesc = NULL;
 
@@ -606,8 +654,11 @@ audio_io_handle_t AudioPolicyManagerBase::getOutput(AudioSystem::stream_type str
             if (!desc->isDuplicated() && (profile == desc->mProfile)) {
                 outputDesc = desc;
                 // reuse direct output if currently open and configured with same parameters
-                if ((samplingRate == outputDesc->mSamplingRate) &&
-                        (format == outputDesc->mFormat) &&
+                if (/*(samplingRate == outputDesc->mSamplingRate) &&*/  \
+                        (/*format == outputDesc->mFormat*/
+ 			    (format ==  AUDIO_FORMAT_DTS||format ==  AUDIO_FORMAT_AC3 ||format ==  AUDIO_FORMAT_EAC3 || format ==  AUDIO_FORMAT_TRUEHD)&&   \
+                        (outputDesc->mFormat ==  AUDIO_FORMAT_DTS||outputDesc->mFormat ==  AUDIO_FORMAT_AC3 ||outputDesc->mFormat ==  AUDIO_FORMAT_EAC3 || outputDesc->mFormat ==  AUDIO_FORMAT_TRUEHD))   \
+                        &&
                         (channelMask == outputDesc->mChannelMask)) {
                     outputDesc->mDirectOpenCount++;
                     ALOGV("getOutput() reusing direct output %d", mOutputs.keyAt(i));
@@ -755,6 +806,14 @@ status_t AudioPolicyManagerBase::startOutput(audio_io_handle_t output,
                             (strategy == STRATEGY_SONIFICATION_RESPECTFUL);
         uint32_t waitMs = 0;
         bool force = false;
+		//------------------------------------
+		if(mAudioOutputPolicy&DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL){
+		   if(outputDesc->mDirectOpenCount )
+			  newDevice=AUDIO_DEVICE_OUT_AUX_DIGITAL;
+		   if(0/*stream==AudioSystem::SYSTEM*/)
+			  newDevice = newDevice&~AUDIO_DEVICE_OUT_AUX_DIGITAL;
+		}
+		//------------------------------------
         for (size_t i = 0; i < mOutputs.size(); i++) {
             AudioOutputDescriptor *desc = mOutputs.valueAt(i);
             if (desc != outputDesc) {
@@ -794,6 +853,17 @@ status_t AudioPolicyManagerBase::startOutput(audio_io_handle_t output,
             usleep((waitMs - muteWaitMs) * 2 * 1000);
         }
     }
+#ifdef DOLBY_UDC_MULTICHANNEL
+    // It is observed that in some use-cases where both outputs are present eg. bluetooth and headphone,
+    // the output for particular stream type is decided in this routine. Hence we must call
+    // getDeviceForStrategy in order to get the current active output for this stream type and update
+    // the dolby system property.
+    if (stream == AudioSystem::MUSIC)
+    {
+        audio_devices_t audioOutputDevice = getDeviceForStrategy(getStrategy(AudioSystem::MUSIC), false);
+        setDolbySystemProperty(audioOutputDevice);
+    }
+#endif // DOLBY_UDC_MULTICHANNEL
     return NO_ERROR;
 }
 
@@ -1074,6 +1144,7 @@ void AudioPolicyManagerBase::releaseInput(audio_io_handle_t input)
     mInputs.removeItem(input);
     ALOGV("releaseInput() exit");
 }
+float AudioPolicyManagerBase::mapVal[] = {0,0,0,0};
 
 void AudioPolicyManagerBase::initStreamVolume(AudioSystem::stream_type stream,
                                             int indexMin,
@@ -1086,6 +1157,16 @@ void AudioPolicyManagerBase::initStreamVolume(AudioSystem::stream_type stream,
     }
     mStreams[stream].mIndexMin = indexMin;
     mStreams[stream].mIndexMax = indexMax;
+    char map[PROPERTY_VALUE_MAX];
+    if(property_get("ro.audio.mapvalue", map, "0,0,0,0") > 0){
+        int i=0;
+        char *props;
+        props = strtok(map,",");
+        while(props){
+            mapVal[i++] = atof(props);
+            props = strtok(NULL,",");
+        }
+    }
 }
 
 status_t AudioPolicyManagerBase::setStreamVolumeIndex(AudioSystem::stream_type stream,
@@ -1174,7 +1255,11 @@ audio_io_handle_t AudioPolicyManagerBase::selectOutputForEffects(
         if ((desc->mFlags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) != 0) {
             outputOffloaded = outputs[i];
         }
+#ifdef DOLBY_DAP_OPENSLES
+        if ((desc->mFlags & AUDIO_OUTPUT_FLAG_NONE) != 0) {
+#else   // DOLBY_DAP_OPENSLES
         if ((desc->mFlags & AUDIO_OUTPUT_FLAG_DEEP_BUFFER) != 0) {
+#endif  // LINE_ADDED_BY_DOLBY
             outputDeepBuffer = outputs[i];
         }
     }
@@ -1197,6 +1282,14 @@ audio_io_handle_t AudioPolicyManagerBase::getOutputForEffect(const effect_descri
 
     routing_strategy strategy = getStrategy(AudioSystem::MUSIC);
     audio_devices_t device = getDeviceForStrategy(strategy, false /*fromCache*/);
+    /*
+        for mbx profile, AUDIO_DEVICE_OUT_AUX_DIGITAL device routed to duplicated output thread.
+        As, duplicated/direct output can not attach effect.so force route to speaker.
+    */
+    if (mAudioOutputPolicy & DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL) {
+        if (device & AUDIO_DEVICE_OUT_AUX_DIGITAL)
+            device &= ~AUDIO_DEVICE_OUT_AUX_DIGITAL;
+    }
     SortedVector<audio_io_handle_t> dstOutputs = getOutputsForDevice(device, mOutputs);
 
     audio_io_handle_t output = selectOutputForEffects(dstOutputs);
@@ -1533,7 +1626,7 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
     mLimitRingtoneVolume(false), mLastVoiceVolume(-1.0f),
     mTotalEffectsCpuLoad(0), mTotalEffectsMemory(0),
     mA2dpSuspended(false), mHasA2dp(false), mHasUsb(false), mHasRemoteSubmix(false),
-    mSpeakerDrcEnabled(false)
+    mSpeakerDrcEnabled(false), mDigitalFixed(0)
 {
     mpClientInterface = clientInterface;
 
@@ -1541,9 +1634,18 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
         mForceUse[i] = AudioSystem::FORCE_NONE;
     }
 
+
+#ifdef DOLBY_UDC_MULTICHANNEL
+    // Set dolby system property to speaker while booting,
+    // if any other device is plugged-in setDeviceConnectionState will be called which
+    // should set appropriate system property.
+    setDolbySystemProperty(AUDIO_DEVICE_OUT_SPEAKER);
+#endif // DOLBY_UDC_MULTICHANNEL
+
     mA2dpDeviceAddress = String8("");
     mScoDeviceAddress = String8("");
     mUsbCardAndDevice = String8("");
+    mAudioOutputPolicy = 	DEVICE_OUTPUT_NORMAL;
 
     if (loadAudioPolicyConfig(AUDIO_POLICY_VENDOR_CONFIG_FILE) != NO_ERROR) {
         if (loadAudioPolicyConfig(AUDIO_POLICY_CONFIG_FILE) != NO_ERROR) {
@@ -1600,7 +1702,11 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
             }
         }
     }
-
+/* for mbx profile, need digital output and analog output at the same time ,so set 0x400 device available */
+     if(mAudioOutputPolicy&DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL){
+		setDeviceConnectionState(AUDIO_DEVICE_OUT_AUX_DIGITAL,	AudioSystem::DEVICE_STATE_AVAILABLE,"hdmi-mbx");
+		//ALOGV("loadGlobalConfig() mAudioOutputPolicy %04x", mAudioOutputPolicy);
+    }
     ALOGE_IF((mAttachedOutputDevices & ~mAvailableOutputDevices),
              "Not output found for attached devices %08x",
              (mAttachedOutputDevices & ~mAvailableOutputDevices));
@@ -1632,6 +1738,14 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
         run(buffer, ANDROID_PRIORITY_AUDIO);
     }
 #endif //AUDIO_POLICY_TEST
+	char prop[PROPERTY_VALUE_MAX] = {0};
+	property_get ("audio.policy.digital.fixed", prop, "true");
+	if (strcmp(prop, "false") != 0) {
+		mDigitalFixed = 1;
+	}else{
+		mDigitalFixed = 0;
+	}
+
 }
 
 AudioPolicyManagerBase::~AudioPolicyManagerBase()
@@ -1962,12 +2076,87 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
                         output = 0;
                     }
                 }
+#ifdef DOLBY_UDC_MULTICHANNEL
+                if (device == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+                {
+                    bool supportHDMI8 = false;
+                    char * infobuf;
+                    int channel = 0;
+
+                    for (uint32_t i = 0; i < profile->mChannelMasks.size(); ++i)
+                    {
+                        audio_channel_mask_t channelMask = profile->mChannelMasks[i];
+                        if (channelMask == AUDIO_CHANNEL_OUT_7POINT1)
+                        {
+                            supportHDMI8 = true;
+                            break;
+                        }
+                    }
+
+                    infobuf = (char *)malloc(1024 * sizeof(char));
+                    if(infobuf == NULL){
+                        ALOGI("%s: malloc infobuf failed.\n",__FUNCTION__);
+                    }else{
+                        int fd = open("/sys/class/amhdmitx/amhdmitx0/aud_cap", O_RDONLY);
+                        if(fd != -1){
+                            int nread = read(fd, infobuf, 1024);
+                            int i;
+                            nread = nread - 5;
+                            for(i = 0; i < nread; i++)
+                            {
+                                if((infobuf[i] == 'P') && (infobuf[i+1] == 'C') && (infobuf[i+2] == 'M')){
+                                    if(infobuf[i+5] == '8')
+                                        channel = channel < 8 ? 8 : channel;
+                                    if(infobuf[i+5] == '6')
+                                        channel = channel < 6 ? 6 : channel;
+                                    if(infobuf[i+5] == '2')
+                                        channel = channel < 2 ? 2 : channel;
+                                }
+                            }
+                            ALOGI("%s: aud_cap support channel number: %d ch\n", __FUNCTION__, channel);
+                            close(fd);
+                            free(infobuf);	
+                            infobuf = NULL;
+                        }
+                        else{
+                            ALOGI("%s: open hdmi driver aud_cap node failed \n", __FUNCTION__);
+                            free(infobuf);
+                            infobuf = NULL;
+			}
+                    }
+
+                    if (supportHDMI8 && (8 == channel))
+                    {
+                        ALOGV("DOLBY_ENDPOINT mCurrentHdmiDeviceCapability = HDMI_8");
+                        mCurrentHdmiDeviceCapability = HDMI_8;
+                    }
+                    else if(6 == channel)
+                    {
+                        ALOGV("DOLBY_ENDPOINT mCurrentHdmiDeviceCapability = HDMI_6");
+                        mCurrentHdmiDeviceCapability = HDMI_6;
+                    }
+                    else
+                    {
+                        ALOGV("DOLBY_ENDPOINT mCurrentHdmiDeviceCapability = HDMI_2");
+                        mCurrentHdmiDeviceCapability = HDMI_2;
+                    }
+                }
+#endif //DOLBY_UDC_MULTICHANNEL
             }
             if (output == 0) {
                 ALOGW("checkOutputsForDevice() could not open output for device %x", device);
                 delete desc;
                 profiles.removeAt(profile_index);
                 profile_index--;
+#ifdef DOLBY_UDC_MULTICHANNEL
+                if (device == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+                {
+                    // Seems the current behaviour for HDMI 2 case is to have output to be
+                    // equal to 0.
+                    ALOGV("DOLBY_ENDPOINT mCurrentHdmiDeviceCapability = HDMI_2");
+                    mCurrentHdmiDeviceCapability = HDMI_2;
+                }
+#endif // DOLBY_UDC_MULTICHANNEL
             } else {
                 outputs.add(output);
                 ALOGV("checkOutputsForDevice(): adding output %d", output);
@@ -1979,6 +2168,13 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
             return BAD_VALUE;
         }
     } else {
+#ifdef DOLBY_UDC_MULTICHANNEL
+        if (device == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+        {
+            mCurrentHdmiDeviceCapability = HDMI_INVALID;
+            ALOGV("DOLBY_ENDPOINT mCurrentHdmiDeviceCapability = HDMI_INVALID");
+        }
+#endif //DOLBY_UDC_MULTICHANNEL
         // check if one opened output is not needed any more after disconnecting one device
         for (size_t i = 0; i < mOutputs.size(); i++) {
             desc = mOutputs.valueAt(i);
@@ -2316,7 +2512,8 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
                                                              bool fromCache)
 {
     uint32_t device = AUDIO_DEVICE_NONE;
-
+    uint32_t rawout_busy_flag  = 0;
+    char prop[PROPERTY_VALUE_MAX];
     if (fromCache) {
         ALOGVV("getDeviceForStrategy() from cache strategy %d, device %x",
               strategy, mDeviceForStrategy[strategy]);
@@ -2467,6 +2664,7 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
             // no sonification on remote submix (e.g. WFD)
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_REMOTE_SUBMIX;
         }
+        uint32_t device3 = AUDIO_DEVICE_NONE;		
         if ((device2 == AUDIO_DEVICE_NONE) &&
                 mHasA2dp && (mForceUse[AudioSystem::FOR_MEDIA] != AudioSystem::FORCE_NO_BT_A2DP) &&
                 (getA2dpOutput() != 0) && !mA2dpSuspended) {
@@ -2489,6 +2687,10 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
         }
         if (device2 == AUDIO_DEVICE_NONE) {
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_USB_DEVICE;
+              property_get("sys.hdmiIn.Capture",prop,"false");
+            if(strcmp(prop,"false")!=0){
+                device2 = AUDIO_DEVICE_NONE;
+            }
         }
         if (device2 == AUDIO_DEVICE_NONE) {
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET;
@@ -2504,10 +2706,11 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
         if (device2 == AUDIO_DEVICE_NONE) {
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_SPEAKER;
         }
+         ALOGV("device2/%x, device3/%x",device2,device3);
 
         // device is DEVICE_OUT_SPEAKER if we come from case STRATEGY_SONIFICATION or
         // STRATEGY_ENFORCED_AUDIBLE, AUDIO_DEVICE_NONE otherwise
-        device |= device2;
+        device |= device2|device3;
         if (device) break;
         device = mDefaultOutputDevice;
         if (device == AUDIO_DEVICE_NONE) {
@@ -2519,7 +2722,31 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
         ALOGW("getDeviceForStrategy() unknown strategy: %d", strategy);
         break;
     }
-
+/* when digital output device is used by previous output, force route the output to speaker */
+    if((mAvailableOutputDevices&AUDIO_DEVICE_OUT_AUX_DIGITAL) && \
+	   (mAudioOutputPolicy&DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL)&& \
+	   (device&AUDIO_DEVICE_OUT_AUX_DIGITAL)
+	   ){
+	        for (size_t i = 0; i < mOutputs.size(); i++) 
+			{
+        		AudioOutputDescriptor *dupOutputDesc = mOutputs.valueAt(i);
+				if((dupOutputDesc->mFlags == AUDIO_OUTPUT_FLAG_DIRECT)&& dupOutputDesc->mDirectOpenCount)
+			    {   
+                    			rawout_busy_flag=1;
+					break;
+				}
+    		}
+			if(rawout_busy_flag && is_digital_raw())
+			{
+			     ALOGI("NOTE: DIRECT_OUTPUT_DEVICE IS BUSY,FORCE TO DEVICE_SPEAKER!\n");
+				 device &= ~AUDIO_DEVICE_OUT_AUX_DIGITAL;
+				 if(device == AUDIO_DEVICE_NONE){
+					    device |= AUDIO_DEVICE_OUT_SPEAKER;
+				 }
+			}else{
+                 device |= AUDIO_DEVICE_OUT_SPEAKER;
+			}
+    }
     ALOGVV("getDeviceForStrategy() strategy %d, device %x", strategy, device);
     return device;
 }
@@ -2571,15 +2798,22 @@ uint32_t AudioPolicyManagerBase::checkDeviceMuteStrategies(AudioOutputDescriptor
                     continue;
                 }
                 audio_io_handle_t curOutput = mOutputs.keyAt(j);
+				
+				if(((routing_strategy)i == STRATEGY_MEDIA) && 
+					(device & AudioSystem::DEVICE_OUT_AUX_DIGITAL)){
+					mute=0;
+				}
                 ALOGVV("checkDeviceMuteStrategies() %s strategy %d (curDevice %04x) on output %d",
                       mute ? "muting" : "unmuting", i, curDevice, curOutput);
                 setStrategyMute((routing_strategy)i, mute, curOutput, mute ? 0 : delayMs);
-                if (desc->isStrategyActive((routing_strategy)i)) {
+                if ((desc->isStrategyActive((routing_strategy)i)) || (((routing_strategy)i == STRATEGY_MEDIA) &&
+                        (device & AudioSystem::DEVICE_OUT_AUX_DIGITAL))) {
                     // do tempMute only for current output
-                    if (tempMute && (desc == outputDesc)) {
+                    if ((tempMute && (desc == outputDesc)) || (((routing_strategy)i == STRATEGY_MEDIA) &&
+                            (device & AudioSystem::DEVICE_OUT_AUX_DIGITAL))) {
                         setStrategyMute((routing_strategy)i, true, curOutput);
                         setStrategyMute((routing_strategy)i, false, curOutput,
-                                            desc->latency() * 2, device);
+                                        desc->latency() * 2, device);
                     }
                     if ((tempMute && (desc == outputDesc)) || mute) {
                         if (muteWaitMs < desc->latency()) {
@@ -2643,7 +2877,7 @@ uint32_t AudioPolicyManagerBase::setOutputDevice(audio_io_handle_t output,
     //  - the requested device is AUDIO_DEVICE_NONE
     //  - the requested device is the same as current device and force is not specified.
     // Doing this check here allows the caller to call setOutputDevice() without conditions
-    if ((device == AUDIO_DEVICE_NONE || device == prevDevice) && !force) {
+    if (((device == AUDIO_DEVICE_NONE || device == prevDevice) && !force)||outputDesc->mDirectOpenCount) {
         ALOGV("setOutputDevice() setting same device %04x or null device for output %d", device, output);
         return muteWaitMs;
     }
@@ -2687,7 +2921,10 @@ AudioPolicyManagerBase::IOProfile *AudioPolicyManagerBase::getInputProfile(audio
 audio_devices_t AudioPolicyManagerBase::getDeviceForInputSource(int inputSource)
 {
     uint32_t device = AUDIO_DEVICE_NONE;
+    ALOGV("getDeviceForInputSource()input source %d, device %08x", inputSource, device);
+    ALOGV("getDeviceForInputSource()input source %d, mAvailableInputDevices %08x", inputSource, mAvailableInputDevices);
 
+    char prop[PROPERTY_VALUE_MAX];
     switch (inputSource) {
     case AUDIO_SOURCE_VOICE_UPLINK:
       if (mAvailableInputDevices & AUDIO_DEVICE_IN_VOICE_CALL) {
@@ -2701,17 +2938,30 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForInputSource(int inputSource)
     case AUDIO_SOURCE_VOICE_RECOGNITION:
     case AUDIO_SOURCE_HOTWORD:
     case AUDIO_SOURCE_VOICE_COMMUNICATION:
+	case AUDIO_DEVICE_IN_USB_DEVICE:
         if (mForceUse[AudioSystem::FOR_RECORD] == AudioSystem::FORCE_BT_SCO &&
             mAvailableInputDevices & AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET) {
             device = AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET;
         } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_WIRED_HEADSET) {
             device = AUDIO_DEVICE_IN_WIRED_HEADSET;
+				} else if (mAvailableInputDevices & AUDIO_DEVICE_IN_USB_DEVICE) {
+		    		device = AUDIO_DEVICE_IN_USB_DEVICE;
+        /*            
+            property_get("sys.hdmiIn.Capture",prop,"false");
+            if(strcmp(prop,"false")!=0){
+                device = AUDIO_DEVICE_IN_BUILTIN_MIC;
+            }
+            */
+        } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_AUX_DIGITAL) {
+            device = AUDIO_DEVICE_IN_AUX_DIGITAL;
         } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_BUILTIN_MIC) {
             device = AUDIO_DEVICE_IN_BUILTIN_MIC;
         }
         break;
     case AUDIO_SOURCE_CAMCORDER:
-        if (mAvailableInputDevices & AUDIO_DEVICE_IN_BACK_MIC) {
+        if (mAvailableInputDevices & AUDIO_DEVICE_IN_USB_DEVICE) {
+		    		device = AUDIO_DEVICE_IN_USB_DEVICE;
+        }else if (mAvailableInputDevices & AUDIO_DEVICE_IN_BACK_MIC) {
             device = AUDIO_DEVICE_IN_BACK_MIC;
         } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_BUILTIN_MIC) {
             device = AUDIO_DEVICE_IN_BUILTIN_MIC;
@@ -2808,7 +3058,27 @@ AudioPolicyManagerBase::device_category AudioPolicyManagerBase::getDeviceCategor
             return DEVICE_CATEGORY_SPEAKER;
     }
 }
-
+float AudioPolicyManagerBase::mapVolume(int value,const StreamDescriptor& streamDesc)
+{
+      //ALOGE("values are:%d,MaxValum is %d",value, streamDesc.mIndexMax);
+      if (mapVal[2] > 0 && mapVal[3] > 0){
+          if (value > mapVal[2] * streamDesc.mIndexMax){
+              return (1 - mapVal[3]) / (1 - mapVal[2]) * (value - mapVal[2]*streamDesc.mIndexMax) + mapVal[3]*streamDesc.mIndexMax;
+          }
+          if (value > mapVal[0] * streamDesc.mIndexMax && mapVal[0] > 0){
+              return (mapVal[2] - mapVal[0]) / (mapVal[3] - mapVal[1]) * (value - mapVal[0]*streamDesc.mIndexMax) + mapVal[1]*streamDesc.mIndexMax;
+          }
+      }
+      if (mapVal[0] > 0 && mapVal[1] > 0){
+          if (value <= mapVal[0] * streamDesc.mIndexMax ){
+              return mapVal[1] / mapVal[0] * value;
+          }
+          if (value > mapVal[0] * streamDesc.mIndexMax && mapVal[2] < 0.001f){
+              return (1 - mapVal[1]) / (1 - mapVal[0]) * (value - mapVal[0]*streamDesc.mIndexMax) + mapVal[1]*streamDesc.mIndexMax;
+          }
+      }
+  return value;
+}
 float AudioPolicyManagerBase::volIndexToAmpl(audio_devices_t device, const StreamDescriptor& streamDesc,
         int indexInUi)
 {
@@ -2818,7 +3088,8 @@ float AudioPolicyManagerBase::volIndexToAmpl(audio_devices_t device, const Strea
     // the volume index in the UI is relative to the min and max volume indices for this stream type
     int nbSteps = 1 + curve[VOLMAX].mIndex -
             curve[VOLMIN].mIndex;
-    int volIdx = (nbSteps * (indexInUi - streamDesc.mIndexMin)) /
+    float dex = mapVolume(indexInUi,streamDesc);
+    int volIdx = (nbSteps * (dex - streamDesc.mIndexMin)) /
             (streamDesc.mIndexMax - streamDesc.mIndexMin);
 
     // find what part of the curve this index volume belongs to, or if it's out of bounds
@@ -3002,14 +3273,24 @@ float AudioPolicyManagerBase::computeVolume(int stream,
     }
 
     // if volume is not 0 (not muted), force media volume to max on digital output
-    if (stream == AudioSystem::MUSIC &&
-        index != mStreams[stream].mIndexMin &&
-        (device == AUDIO_DEVICE_OUT_AUX_DIGITAL ||
-         device == AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET ||
-         device == AUDIO_DEVICE_OUT_USB_ACCESSORY ||
-         device == AUDIO_DEVICE_OUT_USB_DEVICE)) {
-        return 1.0;
-    }
+   if(mDigitalFixed){
+		if (stream == AudioSystem::MUSIC &&
+	        index != mStreams[stream].mIndexMin &&
+	        (device == AUDIO_DEVICE_OUT_AUX_DIGITAL ||
+	         device == AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET ||
+	         device == AUDIO_DEVICE_OUT_USB_ACCESSORY ||
+	         device == AUDIO_DEVICE_OUT_USB_DEVICE)) {
+	        return 1.0;
+   		}
+   }else{
+		if (stream == AudioSystem::MUSIC &&
+	        index != mStreams[stream].mIndexMin &&
+	        (device == AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET ||
+	         device == AUDIO_DEVICE_OUT_USB_ACCESSORY ||
+	         device == AUDIO_DEVICE_OUT_USB_DEVICE)) {
+	        return 1.0;
+   		}
+   }
 
     volume = volIndexToAmpl(device, streamDesc, index);
 
@@ -3244,6 +3525,67 @@ uint32_t AudioPolicyManagerBase::getMaxEffectsMemory()
     return MAX_EFFECTS_MEMORY;
 }
 
+#ifdef DOLBY_UDC_MULTICHANNEL
+// Sets the dolby system property dolby.audio.sink.info
+//
+// At present we are only setting system property for Headphone/Headset/HDMI/Speaker
+// and the same is supported in DDPDecoder.cpp EndpointConfig table.
+// if new device is available eg. bluetooth or usb_audio, then system property
+// must set in this function and also its downmix configuration should be set in
+// DDPDecoder.cpp EndpointConfig table.
+void AudioPolicyManagerBase::setDolbySystemProperty(audio_devices_t device)
+{
+    ALOGV("setDolbySystemProperty device 0x%x",device);
+    switch(device) {
+        case AUDIO_DEVICE_OUT_WIRED_HEADSET:
+        case AUDIO_DEVICE_OUT_WIRED_HEADPHONE:
+            ALOGV("DOLBY_ENDPOINT HEADPHONE");
+            property_set(DOLBY_SYSTEM_PROPERTY,"headset");
+            break;
+        /*case AUDIO_DEVICE_OUT_XXX:
+          example case of bluetooth
+        case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP:
+        case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES:
+        case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER:
+        case AUDIO_DEVICE_OUT_BLUETOOTH_SCO:
+        case AUDIO_DEVICE_OUT_BLUETOOTH_SCO_CARKIT:
+        case AUDIO_DEVICE_OUT_BLUETOOTH_SCO_HEADSET:
+            property_set(DOLBY_SYSTEM_PROPERTY,"bluetooth");
+            break;
+        */
+        case AUDIO_DEVICE_OUT_AUX_DIGITAL:
+            if(mCurrentHdmiDeviceCapability == HDMI_8)
+            {
+                property_set(DOLBY_SYSTEM_PROPERTY,"hdmi8");
+                ALOGV("DOLBY_ENDPOINT HDMI8");
+            }
+            else if (mCurrentHdmiDeviceCapability == HDMI_6)
+            {
+                property_set(DOLBY_SYSTEM_PROPERTY,"hdmi6");
+                ALOGV("DOLBY_ENDPOINT HDMI6");
+            }
+            else //mCurrentHdmiDeviceCapability == HDMI_2 or unknown
+            {
+                ALOGV("DOLBY_ENDPOINT HDMI2");
+                property_set(DOLBY_SYSTEM_PROPERTY,"hdmi2");
+            }
+            break;
+        case AUDIO_DEVICE_OUT_SPEAKER:
+            ALOGV("DOLBY_ENDPOINT SPEAKER");
+            property_set(DOLBY_SYSTEM_PROPERTY,"speaker");
+            break;
+        case AUDIO_DEVICE_OUT_DEFAULT:
+            // If the strategy for handling the current value of
+            // mAvailableOutputDevices is not implemented
+            // AUDIO_DEVICE_OUT_DEFAULT is set.
+            // fall-through
+        default:
+            ALOGV("DOLBY_ENDPOINT INVALID");
+            property_set(DOLBY_SYSTEM_PROPERTY,"invalid");
+            break;
+    }
+}
+#endif //DOLBY_UDC_MULTICHANNEL
 // --- AudioOutputDescriptor class implementation
 
 AudioPolicyManagerBase::AudioOutputDescriptor::AudioOutputDescriptor(
@@ -3642,6 +3984,10 @@ struct StringToEnum {
 #define STRING_TO_ENUM(string) { #string, string }
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
+const struct StringToEnum sPolicyDeviceNameToEnumTable[] = {
+    STRING_TO_ENUM(DEVICE_OUTPUT_NORMAL),
+    STRING_TO_ENUM(DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL),
+};
 const struct StringToEnum sDeviceNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_EARPIECE),
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_SPEAKER),
@@ -3662,6 +4008,7 @@ const struct StringToEnum sDeviceNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_DEVICE_IN_AUX_DIGITAL),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_VOICE_CALL),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_BACK_MIC),
+    STRING_TO_ENUM(AUDIO_DEVICE_IN_USB_DEVICE),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_REMOTE_SUBMIX),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_ANLG_DOCK_HEADSET),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_DGTL_DOCK_HEADSET),
@@ -3683,6 +4030,10 @@ const struct StringToEnum sFormatNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_FORMAT_MP3),
     STRING_TO_ENUM(AUDIO_FORMAT_AAC),
     STRING_TO_ENUM(AUDIO_FORMAT_VORBIS),
+    STRING_TO_ENUM(AUDIO_FORMAT_DTS),
+    STRING_TO_ENUM(AUDIO_FORMAT_AC3),
+    STRING_TO_ENUM(AUDIO_FORMAT_EAC3),
+    STRING_TO_ENUM(AUDIO_FORMAT_TRUEHD),
 };
 
 const struct StringToEnum sOutChannelsNameToEnumTable[] = {
@@ -4022,6 +4373,14 @@ void AudioPolicyManagerBase::loadGlobalConfig(cnode *root)
         } else if (strcmp(ATTACHED_INPUT_DEVICES_TAG, node->name) == 0) {
             mAvailableInputDevices = parseDeviceNames((char *)node->value) & ~AUDIO_DEVICE_BIT_IN;
             ALOGV("loadGlobalConfig() mAvailableInputDevices %04x", mAvailableInputDevices);
+        }	else if (strcmp(AUDIO_OUTPUT_POLICY_TAG, node->name) == 0) {
+            mAudioOutputPolicy = (audio_devices_t)stringToEnum(sPolicyDeviceNameToEnumTable,
+                                              ARRAY_SIZE(sPolicyDeviceNameToEnumTable),
+                                              (char *)node->value);
+	        if(mAudioOutputPolicy&DEVICE_OUTPUT_ALWAYS_WITH_AUX_DIGITAL){
+	           //setDeviceConnectionState(AUDIO_DEVICE_OUT_AUX_DIGITAL,	AudioSystem::DEVICE_STATE_AVAILABLE,"hdmi-mbx");
+		       ALOGV("loadGlobalConfig() mAudioOutputPolicy %04x", mAudioOutputPolicy);
+	     	}	
         } else if (strcmp(SPEAKER_DRC_ENABLED_TAG, node->name) == 0) {
             mSpeakerDrcEnabled = stringToBool((char *)node->value);
             ALOGV("loadGlobalConfig() mSpeakerDrcEnabled = %d", mSpeakerDrcEnabled);
@@ -4074,7 +4433,7 @@ void AudioPolicyManagerBase::defaultAudioPolicyConfig(void)
     module->mOutputProfiles.add(profile);
 
     profile = new IOProfile(module);
-    profile->mSamplingRates.add(8000);
+    profile->mSamplingRates.add(16000);
     profile->mFormats.add(AUDIO_FORMAT_PCM_16_BIT);
     profile->mChannelMasks.add(AUDIO_CHANNEL_IN_MONO);
     profile->mSupportedDevices = AUDIO_DEVICE_IN_BUILTIN_MIC;
