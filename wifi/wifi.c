@@ -251,11 +251,130 @@ int is_wifi_driver_loaded() {
 #endif
 }
 
+struct wifi_usbdev {
+        int vid;
+        int pid;
+        char name[16];
+        char path[64];
+};
+
+#define MAX_WIFI_MODEL_TYPE 12
+static struct wifi_usbdev usbdevs[MAX_WIFI_MODEL_TYPE];
+
+struct wifi_usbdev *gWifiUSBdev;
+
+static int wifi_usb_read_id(const char* entry, int *vid, int *pid)
+{
+        char buf[4 + 1];
+        char node[50];
+        int fd;
+
+        sprintf(node, "/sys/bus/usb/devices/%s/idVendor", entry);
+        fd = open(node, O_RDONLY);
+        if (fd < 0)
+                return -ENOENT;
+
+        read(fd, buf, 4);
+        close(fd);
+
+        *vid = strtol(buf, NULL, 16);
+
+        sprintf(node, "/sys/bus/usb/devices/%s/idProduct", entry);
+        fd = open(node, O_RDONLY);
+        if (fd < 0)
+                return -ENOENT;
+
+        read(fd, buf, 4);
+        close(fd);
+
+        *pid = strtol(buf, NULL, 16);
+
+        return 0;
+}
+
+int load_wifi_list() {
+    FILE *fp;
+    char * line = NULL;
+    char *p;
+    size_t len = 0;
+    ssize_t read;
+    int i = 0;
+    int count = 0;
+
+    fp = fopen("/system/etc/wifi_id_list.txt", "r");
+
+    if (fp == NULL)
+        return -1;
+
+    while ((read = getline(&line, &len, fp)) != -1) {
+        char temp[4][64];
+        char *p = strtok(line, " ");
+        int j = 0;
+        while (p != NULL) {
+            strcpy(temp[j++], p);
+            p = strtok(NULL, " ");
+        }
+        usbdevs[i].vid = strtoul(temp[0], &p, 16);
+        usbdevs[i].pid = strtoul(temp[1], &p, 16);
+        strcpy(usbdevs[i].name, temp[2]);
+        temp[3][strlen(temp[3]) - 1] = 0;
+        strcpy(usbdevs[i].path, temp[3]);
+        i++;
+    }
+    count = i;
+
+    fclose(fp);
+    if (line)
+        free(line);
+
+    return count;
+}
+
 int wifi_load_driver()
 {
 #ifdef WIFI_DRIVER_MODULE_PATH
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
+
+    DIR *dir = opendir("/sys/bus/usb/devices/");
+    if (dir == NULL)
+        return 0;
+
+    int found = 0;
+    struct dirent *dent;
+
+    if (load_wifi_list() <= 0)
+        return 0;
+
+    while (!found && (dent = readdir(dir)) != NULL) {
+        int vid, pid;
+        int err;
+        int i;
+
+        err = wifi_usb_read_id(dent->d_name, &vid, &pid);
+        if (err < 0)
+                continue;
+
+        ALOGE("Detected USB WiFi = %04x:%04x", vid, pid);
+
+        for (i = 0; i < MAX_WIFI_MODEL_TYPE; i++) {
+            gWifiUSBdev = &usbdevs[i];
+            if ((gWifiUSBdev->vid == vid) && (gWifiUSBdev->pid == pid)) {
+                ALOGE("vid:%04x pid:%04x",
+                    gWifiUSBdev->vid, gWifiUSBdev->pid);
+                found = 1;
+                break;
+            }
+        }
+    }
+    close(dir);
+
+    strcpy(DRIVER_MODULE_NAME, gWifiUSBdev->name);
+    strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
+    strcpy(DRIVER_MODULE_PATH, gWifiUSBdev->path);
+
+    ALOGE("DRIVER_MODULE_NAME = %s", DRIVER_MODULE_NAME);
+    ALOGE("DRIVER_MODULE_PATH = %s", DRIVER_MODULE_PATH);
 
     if (is_wifi_driver_loaded()) {
         return 0;
@@ -304,6 +423,9 @@ int wifi_unload_driver()
 {
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
+    if (gWifiUSBdev == NULL)
+        return 0;
+
     if (rmmod(DRIVER_MODULE_NAME) == 0) {
         int count = 20; /* wait at most 10 seconds for completion */
         while (count-- > 0) {
