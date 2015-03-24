@@ -266,10 +266,11 @@ struct wifi_usbdev {
         char path[64];
 };
 
-#define MAX_WIFI_MODEL_TYPE 12
+#define MAX_WIFI_MODEL_TYPE 48
 static struct wifi_usbdev usbdevs[MAX_WIFI_MODEL_TYPE];
 
 struct wifi_usbdev *gWifiUSBdev;
+int wifi_usbdev_idx[MAX_WIFI_MODEL_TYPE] = { -1,};
 
 static int wifi_usb_read_id(const char* entry, int *vid, int *pid)
 {
@@ -345,6 +346,7 @@ int wifi_load_driver()
 #ifdef WIFI_DRIVER_MODULE_PATH
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
+    int i = 0;
 
     DIR *dir = opendir("/sys/bus/usb/devices/");
     if (dir == NULL)
@@ -359,7 +361,7 @@ int wifi_load_driver()
     while (!found && (dent = readdir(dir)) != NULL) {
         int vid, pid;
         int err;
-        int i;
+        i = 0;
 
         err = wifi_usb_read_id(dent->d_name, &vid, &pid);
         if (err < 0)
@@ -367,13 +369,15 @@ int wifi_load_driver()
 
         ALOGE("Detected USB WiFi = %04x:%04x", vid, pid);
 
+        memset(wifi_usbdev_idx, -1, MAX_WIFI_MODEL_TYPE);
+
         for (i = 0; i < MAX_WIFI_MODEL_TYPE; i++) {
-            gWifiUSBdev = &usbdevs[i];
-            if ((gWifiUSBdev->vid == vid) && (gWifiUSBdev->pid == pid)) {
+            if ((usbdevs[i].vid == vid) && (usbdevs[i].pid == pid)) {
+                gWifiUSBdev = &usbdevs[i];
                 ALOGE("vid:%04x pid:%04x",
                     gWifiUSBdev->vid, gWifiUSBdev->pid);
+                wifi_usbdev_idx[i] = 1;
                 found = 1;
-                break;
             }
         }
     }
@@ -390,8 +394,14 @@ int wifi_load_driver()
         return 0;
     }
 
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0)
-        return -1;
+    for (i = 0; i < MAX_WIFI_MODEL_TYPE; i++) {
+        if (wifi_usbdev_idx[i] == 1) {
+            ALOGE("insmod %s", usbdevs[i].path);
+            if (insmod(usbdevs[i].path, DRIVER_MODULE_ARG) < 0)
+                return -1;
+            usleep(200000);
+        }
+    }
 
 #if 1
 #define TIME_COUNT 200
@@ -456,25 +466,30 @@ int wifi_load_driver()
 
 int wifi_unload_driver()
 {
+    int i = 0;
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
-    if (gWifiUSBdev == NULL)
-        return 0;
 
-    if (rmmod(DRIVER_MODULE_NAME) == 0) {
-        int count = 20; /* wait at most 10 seconds for completion */
-        while (count-- > 0) {
-            if (!is_wifi_driver_loaded())
-                break;
-            usleep(500000);
+    for (i = MAX_WIFI_MODEL_TYPE - 1; i >= 0; i--) {
+        if (wifi_usbdev_idx[i] == 1) {
+            ALOGE("rmmod %s", usbdevs[i].name);
+            if (rmmod(usbdevs[i].name) == 0) {
+                int count = 20; /* wait at most 10 seconds for completion */
+                while (count-- > 0) {
+                    if (!is_wifi_driver_loaded())
+                        break;
+                    usleep(500000);
+                }
+                usleep(500000); /* allow card removal */
+                if (count) {
+                    continue;
+                }
+            } else {
+                return -1;
+            }
         }
-        usleep(500000); /* allow card removal */
-        if (count) {
-            return 0;
-        }
-        return -1;
-    } else
-        return -1;
+    }
+    return 0;
 #else
 #ifdef WIFI_DRIVER_STATE_CTRL_PARAM
     if (is_wifi_driver_loaded()) {
