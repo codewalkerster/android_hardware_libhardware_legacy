@@ -329,7 +329,7 @@ int wifi_load_driver()
             }
         }
     }
-    close(dir);
+    closedir(dir);
 
     strcpy(DRIVER_MODULE_NAME, gWifiUSBdev->name);
     strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
