@@ -258,7 +258,7 @@ int wifi_load_driver()
             }
         }
     }
-    close(dir);
+    closedir(dir);
 
     ALOGE("DRIVER_MODULE_NAME = %s", DRIVER_MODULE_NAME);
     ALOGE("DRIVER_MODULE_PATH = %s", DRIVER_MODULE_PATH);
