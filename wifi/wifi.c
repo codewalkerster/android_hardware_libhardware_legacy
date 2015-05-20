@@ -60,25 +60,25 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 #define WIFI_DRIVER_MODULE_ARG          ""
 #endif
 #ifndef WIFI_FIRMWARE_LOADER
-#define WIFI_FIRMWARE_LOADER        ""
+#define WIFI_FIRMWARE_LOADER		""
 #endif
-#define WIFI_TEST_INTERFACE        "sta"
+#define WIFI_TEST_INTERFACE		"sta"
 
 #ifndef WIFI_DRIVER_FW_PATH_STA
-#define WIFI_DRIVER_FW_PATH_STA        NULL
+#define WIFI_DRIVER_FW_PATH_STA		NULL
 #endif
 #ifndef WIFI_DRIVER_FW_PATH_AP
-#define WIFI_DRIVER_FW_PATH_AP        NULL
+#define WIFI_DRIVER_FW_PATH_AP		NULL
 #endif
 #ifndef WIFI_DRIVER_FW_PATH_P2P
-#define WIFI_DRIVER_FW_PATH_P2P        NULL
+#define WIFI_DRIVER_FW_PATH_P2P		NULL
 #endif
 
 #ifndef WIFI_DRIVER_FW_PATH_PARAM
-#define WIFI_DRIVER_FW_PATH_PARAM    "/sys/module/wlan/parameters/fwpath"
+#define WIFI_DRIVER_FW_PATH_PARAM	"/sys/module/wlan/parameters/fwpath"
 #endif
 
-#define WIFI_DRIVER_LOADER_DELAY    1000000
+#define WIFI_DRIVER_LOADER_DELAY	1000000
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
@@ -100,7 +100,7 @@ static const char CONTROL_IFACE_PATH[]  = "/data/misc/wifi/sockets";
 static const char MODULE_FILE[]         = "/proc/modules";
 
 static const char IFNAME[]              = "IFNAME=";
-#define IFNAMELEN            (sizeof(IFNAME) - 1)
+#define IFNAMELEN			(sizeof(IFNAME) - 1)
 static const char WPA_EVENT_IGNORE[]    = "CTRL-EVENT-IGNORE ";
 
 static const char SUPP_ENTROPY_FILE[]   = WIFI_ENTROPY_FILE;
@@ -209,78 +209,133 @@ int is_wifi_driver_loaded() {
 #endif
 }
 
+struct wifi_usbdev {
+        int vid;
+        int pid;
+        char name[16];
+        char path[64];
+};
+
+#define MAX_WIFI_MODEL_TYPE 48
+static struct wifi_usbdev usbdevs[MAX_WIFI_MODEL_TYPE];
+
+struct wifi_usbdev *gWifiUSBdev;
+int wifi_usbdev_idx[MAX_WIFI_MODEL_TYPE] = { -1,};
+
+static int wifi_usb_read_id(const char* entry, int *vid, int *pid)
+{
+        char buf[4 + 1];
+        char node[50];
+        int fd;
+
+        sprintf(node, "/sys/bus/usb/devices/%s/idVendor", entry);
+        fd = open(node, O_RDONLY);
+        if (fd < 0)
+                return -ENOENT;
+
+        read(fd, buf, 4);
+        close(fd);
+
+        *vid = strtol(buf, NULL, 16);
+
+        sprintf(node, "/sys/bus/usb/devices/%s/idProduct", entry);
+        fd = open(node, O_RDONLY);
+        if (fd < 0)
+                return -ENOENT;
+
+        read(fd, buf, 4);
+        close(fd);
+
+        *pid = strtol(buf, NULL, 16);
+
+        return 0;
+}
+
+int load_wifi_list() {
+    FILE *fp;
+    char * line = NULL;
+    char *p;
+    size_t len = 0;
+    ssize_t read;
+    int i = 0;
+    int count = 0;
+
+    fp = fopen("/system/etc/wifi_id_list.txt", "r");
+
+    if (fp == NULL)
+        return -1;
+
+    while ((read = getline(&line, &len, fp)) != -1) {
+        char temp[4][64];
+        char *p = strtok(line, " ");
+        int j = 0;
+        while (p != NULL) {
+            strcpy(temp[j++], p);
+            p = strtok(NULL, " ");
+        }
+        usbdevs[i].vid = strtoul(temp[0], &p, 16);
+        usbdevs[i].pid = strtoul(temp[1], &p, 16);
+        strcpy(usbdevs[i].name, temp[2]);
+        temp[3][strlen(temp[3]) - 1] = 0;
+        strcpy(usbdevs[i].path, temp[3]);
+        i++;
+    }
+    count = i;
+
+    fclose(fp);
+    if (line)
+        free(line);
+
+    return count;
+}
+
 int wifi_load_driver()
 {
 #ifdef WIFI_DRIVER_MODULE_PATH
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
+    int i = 0;
 
-    char node[50] = {'\0',};
-    char buf[5] = {'\0',};
     DIR *dir = opendir("/sys/bus/usb/devices/");
-    struct dirent *dent;
-    if (dir != NULL) {
-        while ((dent = readdir(dir)) != NULL) {
-            memset(node, '\0', 50);
-            sprintf(node, "/sys/bus/usb/devices/%s/idVendor", dent->d_name);
-            int vid_fd = open(node, O_RDONLY);
-            memset(buf, '\0', 5);
-            if (vid_fd > 0) {
-                read(vid_fd, buf, 4);
-                ALOGE("node = %s, vid = %s", node, buf);
-                if (strcmp(buf, "0bda") == 0 || 
-                        strcmp(buf, "148f") == 0 || strcmp(buf, "7392") == 0 || strcmp(buf, "148f") == 0) {
-                    sprintf(node, "/sys/bus/usb/devices/%s/idProduct", dent->d_name);
-                    int pid_fd = open(node, O_RDONLY);
-                    read(pid_fd, buf, 4);
-                    ALOGE("node = %s, pid = %s", node, buf);
-                    if (pid_fd > 0) {
-                        if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
-                            ALOGE("rtl8192cu Wi-Fi Module 3");
-                            //wifi module 3 rtl8192cu
-                            strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
-                            strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME2 " ");
-                            strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH2);
-                            close(pid_fd);
-                            close(vid_fd);
-                            break;
-                        } else if (strcmp(buf, "8172") == 0) {
-                            ALOGE("rtl8191su Wi-Fi Module 2");
-                            //wifi module 2 rtl8192cu
-                            strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME);
-                            strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
-                            strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH);
-                            close(pid_fd);
-                            close(vid_fd);
-                            break;
-                        } else if (strcmp(buf, "5370") == 0) {
-                            ALOGE("rt5370 Wi-Fi Module 1");
-                            //wifi module 1 rt5370
-                            strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME3);
-                            strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME3 " ");
-                            strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH3);
-                            close(pid_fd);
-                            close(vid_fd);
-                            break;
-                        } else if (strcmp(buf, "5572") == 0) {
-                            ALOGE("rt5370 Wi-Fi Module 4");
-                            //wifi module 1 rt5370
-                            strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME4);
-                            strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME4 " ");
-                            strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH4);
-                            close(pid_fd);
-                            close(vid_fd);
-                            break;
-                        }
+    if (dir == NULL)
+        return 0;
 
-                        close(pid_fd);
-                    }
-                }
-                close(vid_fd);
-            }
+    int found = 0;
+    struct dirent *dent;
+
+    if (load_wifi_list() <= 0)
+        return 0;
+
+    while (!found && (dent = readdir(dir)) != NULL) {
+        int vid, pid;
+        int err;
+        i = 0;
+
+        err = wifi_usb_read_id(dent->d_name, &vid, &pid);
+        if (err < 0)
+                continue;
+
+        ALOGE("Detected USB Device = %04x:%04x", vid, pid);
+
+        for (i = 0; i < MAX_WIFI_MODEL_TYPE; i++) {
+            if ((usbdevs[i].vid == vid) && (usbdevs[i].pid == pid)) {
+                gWifiUSBdev = &usbdevs[i];
+                ALOGE("Detected USB Wi-Fi vid:%04x pid:%04x",
+                    gWifiUSBdev->vid, gWifiUSBdev->pid);
+                wifi_usbdev_idx[i] = 1;
+                found = 1;
+            } else
+                wifi_usbdev_idx[i] = -1;
         }
     }
-    close(dir);
+    closedir(dir);
+
+    if (found == 0)
+        return -1;
+
+    strcpy(DRIVER_MODULE_NAME, gWifiUSBdev->name);
+    strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
+    strcpy(DRIVER_MODULE_PATH, gWifiUSBdev->path);
 
     ALOGE("DRIVER_MODULE_NAME = %s", DRIVER_MODULE_NAME);
     ALOGE("DRIVER_MODULE_PATH = %s", DRIVER_MODULE_PATH);
@@ -289,8 +344,14 @@ int wifi_load_driver()
         return 0;
     }
 
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0)
-        return -1;
+    for (i = 0; i < MAX_WIFI_MODEL_TYPE; i++) {
+        if (wifi_usbdev_idx[i] == 1) {
+            ALOGE("insmod %s", usbdevs[i].path);
+            if (insmod(usbdevs[i].path, DRIVER_MODULE_ARG) < 0)
+                return -1;
+            usleep(200000);
+        }
+    }
 
     if (strcmp(FIRMWARE_LOADER,"") == 0) {
         /* usleep(WIFI_DRIVER_LOADER_DELAY); */
@@ -322,22 +383,30 @@ int wifi_load_driver()
 
 int wifi_unload_driver()
 {
+    int i = 0;
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
-    if (rmmod(DRIVER_MODULE_NAME) == 0) {
-        int count = 20; /* wait at most 10 seconds for completion */
-        while (count-- > 0) {
-            if (!is_wifi_driver_loaded())
-                break;
-            usleep(500000);
+
+    for (i = MAX_WIFI_MODEL_TYPE - 1; i >= 0; i--) {
+        if (wifi_usbdev_idx[i] == 1) {
+            ALOGE("rmmod %s", usbdevs[i].name);
+            if (rmmod(usbdevs[i].name) == 0) {
+                int count = 20; /* wait at most 10 seconds for completion */
+                while (count-- > 0) {
+                    if (!is_wifi_driver_loaded())
+                        break;
+                    usleep(200000);
+                }
+                usleep(200000); /* allow card removal */
+                if (count) {
+                    continue;
+                }
+            } else {
+                return -1;
+            }
         }
-        usleep(500000); /* allow card removal */
-        if (count) {
-            return 0;
-        }
-        return -1;
-    } else
-        return -1;
+    }
+    return 0;
 #else
     property_set(DRIVER_PROP_NAME, "unloaded");
     return 0;
@@ -911,6 +980,6 @@ int wifi_change_fw_path(const char *fwpath)
         ret = -1;
     }
     close(fd);
-#endif    
+#endif
     return ret;
 }
