@@ -367,21 +367,23 @@ int wifi_load_driver()
         if (err < 0)
                 continue;
 
-        ALOGE("Detected USB WiFi = %04x:%04x", vid, pid);
-
-        memset(wifi_usbdev_idx, -1, MAX_WIFI_MODEL_TYPE);
+        ALOGE("Detected USB Device = %04x:%04x", vid, pid);
 
         for (i = 0; i < MAX_WIFI_MODEL_TYPE; i++) {
             if ((usbdevs[i].vid == vid) && (usbdevs[i].pid == pid)) {
                 gWifiUSBdev = &usbdevs[i];
-                ALOGE("vid:%04x pid:%04x",
+                ALOGE("Detected USB Wi-Fi vid:%04x pid:%04x",
                     gWifiUSBdev->vid, gWifiUSBdev->pid);
                 wifi_usbdev_idx[i] = 1;
                 found = 1;
-            }
+            } else
+                wifi_usbdev_idx[i] = -1;
         }
     }
     closedir(dir);
+
+    if (found == 0)
+        return -1;
 
     strcpy(DRIVER_MODULE_NAME, gWifiUSBdev->name);
     strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
@@ -478,9 +480,9 @@ int wifi_unload_driver()
                 while (count-- > 0) {
                     if (!is_wifi_driver_loaded())
                         break;
-                    usleep(500000);
+                    usleep(200000);
                 }
-                usleep(500000); /* allow card removal */
+                usleep(200000); /* allow card removal */
                 if (count) {
                     continue;
                 }
