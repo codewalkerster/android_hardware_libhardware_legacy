@@ -266,7 +266,7 @@ struct wifi_usbdev {
         char path[64];
 };
 
-#define MAX_WIFI_MODEL_TYPE 48
+#define MAX_WIFI_MODEL_TYPE 100
 static struct wifi_usbdev usbdevs[MAX_WIFI_MODEL_TYPE];
 
 struct wifi_usbdev *gWifiUSBdev;
@@ -320,13 +320,18 @@ int load_wifi_list() {
         char *p = strtok(line, " ");
         int j = 0;
         while (p != NULL) {
-            strcpy(temp[j++], p);
+            if (j < 4)
+                strcpy(temp[j], p);
             p = strtok(NULL, " ");
+            j++;
         }
         usbdevs[i].vid = strtoul(temp[0], &p, 16);
         usbdevs[i].pid = strtoul(temp[1], &p, 16);
         strcpy(usbdevs[i].name, temp[2]);
-        temp[3][strlen(temp[3]) - 1] = 0;
+        if (j > 4)
+            temp[3][strlen(temp[3])] = 0;
+        else
+            temp[3][strlen(temp[3]) - 1] = 0;
         strcpy(usbdevs[i].path, temp[3]);
         i++;
     }
