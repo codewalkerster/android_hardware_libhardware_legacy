@@ -216,7 +216,7 @@ struct wifi_usbdev {
         char path[64];
 };
 
-#define MAX_WIFI_MODEL_TYPE 100
+#define MAX_WIFI_MODEL_TYPE 200
 static struct wifi_usbdev usbdevs[MAX_WIFI_MODEL_TYPE];
 
 struct wifi_usbdev *gWifiUSBdev;
