@@ -265,7 +265,9 @@ static struct wifi_modules {
 	char tag[32];
 	char modules[16][PATH_MAX];
 	int nr_modules;
-} wifi_modules;
+} wifi_modules = {
+	.nr_modules = 0,
+};
 
 struct wifi_usbdev *gWifiUSBdev;
 
@@ -487,9 +489,10 @@ int wifi_unload_driver()
 
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
-    while (wifi_modules.nr_modules--) {
+    while (wifi_modules.nr_modules > 0) {
 	    path2tag(wifi_modules.modules[wifi_modules.nr_modules], drvname);
 	    rmmod(drvname);
+	    wifi_modules.nr_modules--;
     }
 
     return 0;
