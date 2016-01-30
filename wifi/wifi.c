@@ -455,9 +455,9 @@ int wifi_unload_driver()
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
     while (wifi_modules.nr_modules > 0) {
+	    wifi_modules.nr_modules--;
 	    path2tag(wifi_modules.modules[wifi_modules.nr_modules], drvname);
 	    rmmod(drvname);
-	    wifi_modules.nr_modules--;
     }
 
     return 0;
