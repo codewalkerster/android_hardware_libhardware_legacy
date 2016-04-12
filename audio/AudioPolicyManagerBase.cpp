@@ -2593,6 +2593,8 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
                 device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET;
                 if (device) break;
             }
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_USB_DEVICE;
+            if (device) break;
             device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_EARPIECE;
             if (device) break;
             device = mDefaultOutputDevice;
@@ -2622,6 +2624,8 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
                 device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET;
                 if (device) break;
             }
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_USB_DEVICE;
+            if (device) break;
             device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_SPEAKER;
             if (device) break;
             device = mDefaultOutputDevice;
@@ -2687,10 +2691,6 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
         }
         if (device2 == AUDIO_DEVICE_NONE) {
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_USB_DEVICE;
-              property_get("sys.hdmiIn.Capture",prop,"false");
-            if(strcmp(prop,"false")!=0){
-                device2 = AUDIO_DEVICE_NONE;
-            }
         }
         if (device2 == AUDIO_DEVICE_NONE) {
             device2 = mAvailableOutputDevices & AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET;
@@ -2942,16 +2942,10 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForInputSource(int inputSource)
         if (mForceUse[AudioSystem::FOR_RECORD] == AudioSystem::FORCE_BT_SCO &&
             mAvailableInputDevices & AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET) {
             device = AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET;
+	} else if (mAvailableInputDevices & AUDIO_DEVICE_IN_USB_DEVICE) {
+	    device = AUDIO_DEVICE_IN_USB_DEVICE;
         } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_WIRED_HEADSET) {
             device = AUDIO_DEVICE_IN_WIRED_HEADSET;
-				} else if (mAvailableInputDevices & AUDIO_DEVICE_IN_USB_DEVICE) {
-		    		device = AUDIO_DEVICE_IN_USB_DEVICE;
-        /*            
-            property_get("sys.hdmiIn.Capture",prop,"false");
-            if(strcmp(prop,"false")!=0){
-                device = AUDIO_DEVICE_IN_BUILTIN_MIC;
-            }
-            */
         } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_AUX_DIGITAL) {
             device = AUDIO_DEVICE_IN_AUX_DIGITAL;
         } else if (mAvailableInputDevices & AUDIO_DEVICE_IN_BUILTIN_MIC) {
