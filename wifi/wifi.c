@@ -459,7 +459,7 @@ int wifi_unload_driver()
 	    path2tag(wifi_modules.modules[wifi_modules.nr_modules], drvname);
 	    rmmod(drvname);
     }
-
+    property_set(DRIVER_PROP_NAME, "unloaded");
     return 0;
 #else
 #ifdef WIFI_DRIVER_STATE_CTRL_PARAM
