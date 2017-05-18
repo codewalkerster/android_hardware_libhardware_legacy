@@ -3152,6 +3152,11 @@ float AudioPolicyManagerBase::computeVolume(int stream,
         device = outputDesc->device();
     }
 
+    // for usb audio device
+    if (device == AUDIO_DEVICE_OUT_USB_DEVICE) {
+        device = AUDIO_DEVICE_OUT_WIRED_HEADPHONE;
+    }
+
     // if volume is not 0 (not muted), force media volume to max on digital output
    if(mDigitalFixed){
 		if (stream == AudioSystem::MUSIC &&
