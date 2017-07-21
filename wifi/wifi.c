@@ -23,7 +23,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <poll.h>
-#include <sys/syscall.h>
 
 #include "hardware_legacy/wifi.h"
 #ifdef LIBWPA_CLIENT_EXISTS
@@ -230,19 +229,21 @@ static char wifi_type[64] = {0};
 
 static int wifi_dirver_is_loaded = -1 ;
 
-static int insmod(const char *filename, const char *options)
+static int insmod(const char *filename, const char *args)
 {
-    int fd = open(filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd == -1) {
-        ALOGE("insmod: open(\"%s\") failed: %s", filename, strerror(errno));
+    void *module;
+    unsigned int size;
+    int ret;
+
+    module = load_file(filename, &size);
+    if (!module)
         return -1;
-    }
-    int rc = syscall(__NR_finit_module, fd, options, 0);
-    if (rc == -1) {
-        ALOGE("finit_module for \"%s\" failed: %s", filename, strerror(errno));
-    }
-    close(fd);
-    return rc;
+
+    ret = init_module(module, size, args);
+
+    free(module);
+
+    return ret;
 }
 
 static int rmmod(const char *modname)
