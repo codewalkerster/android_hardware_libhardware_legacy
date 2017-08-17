@@ -393,7 +393,7 @@ int wifi_load_driver()
     if (load_wifi_list(&wifi_modules))
         break;
     }
-    close(dir);
+    closedir(dir);
 
     if (wifi_modules.nr_modules == 0)
         return -1;
